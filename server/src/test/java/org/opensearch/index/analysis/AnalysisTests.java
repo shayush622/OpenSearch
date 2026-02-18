@@ -145,4 +145,86 @@ public class AnalysisTests extends OpenSearchTestCase {
         }));
         assertEquals("Line [1]: Invalid rule", ex.getMessage());
     }
+     //POC: Add ref-path tests 
+    // ========== REF-PATH TESTS ==========
+
+    public void testParseRefPathValid() {
+        String[] parts = Analysis.parseRefPath("pkg-12345/hunspell/en_US");
+        assertNotNull(parts);
+        assertEquals(3, parts.length);
+        assertEquals("pkg-12345", parts[0]);
+        assertEquals("hunspell", parts[1]);
+        assertEquals("en_US", parts[2]);
+    }
+
+    public void testParseRefPathValidTextDictionary() {
+        String[] parts = Analysis.parseRefPath("my-package/text-dictionary/custom");
+        assertNotNull(parts);
+        assertEquals(3, parts.length);
+        assertEquals("my-package", parts[0]);
+        assertEquals("text-dictionary", parts[1]);
+        assertEquals("custom", parts[2]);
+    }
+
+    public void testParseRefPathNull() {
+        assertNull(Analysis.parseRefPath(null));
+        assertNull(Analysis.parseRefPath(""));
+    }
+
+    public void testParseRefPathInvalidFormat() {
+        // Too few parts
+        IllegalArgumentException ex = expectThrows(
+            IllegalArgumentException.class,
+            () -> Analysis.parseRefPath("pkg-123/hunspell")
+        );
+        assertTrue(ex.getMessage().contains("Invalid ref_path format"));
+
+        // Too many parts
+        ex = expectThrows(
+            IllegalArgumentException.class,
+            () -> Analysis.parseRefPath("pkg/hunspell/en_US/extra")
+        );
+        assertTrue(ex.getMessage().contains("Invalid ref_path format"));
+    }
+
+    public void testParseRefPathInvalidResourceType() {
+        IllegalArgumentException ex = expectThrows(
+            IllegalArgumentException.class,
+            () -> Analysis.parseRefPath("pkg-123/invalid/en_US")
+        );
+        assertTrue(ex.getMessage().contains("Invalid resource type"));
+    }
+
+    public void testValidateRefPathFormat() {
+        assertTrue(Analysis.validateRefPathFormat("pkg-123/hunspell/en_US"));
+        assertTrue(Analysis.validateRefPathFormat("pkg-123/text-dictionary/custom"));
+        assertFalse(Analysis.validateRefPathFormat(null));
+        assertFalse(Analysis.validateRefPathFormat(""));
+    }
+
+    public void testResolveRefPath() throws IOException {
+        Path tempDir = createTempDir();
+        Settings nodeSettings = Settings.builder()
+            .put(Environment.PATH_HOME_SETTING.getKey(), tempDir)
+            .build();
+        Environment env = TestEnvironment.newEnvironment(nodeSettings);
+
+        Path resolvedPath = Analysis.resolveRefPath(env, "pkg-123/hunspell/en_US");
+        assertNotNull(resolvedPath);
+        assertTrue(resolvedPath.toString().contains("packages"));
+        assertTrue(resolvedPath.toString().contains("pkg-123"));
+        assertTrue(resolvedPath.toString().contains("hunspell"));
+        assertTrue(resolvedPath.toString().contains("en_US"));
+    }
+
+    public void testResolveRefPathNull() throws IOException {
+        Path tempDir = createTempDir();
+        Settings nodeSettings = Settings.builder()
+            .put(Environment.PATH_HOME_SETTING.getKey(), tempDir)
+            .build();
+        Environment env = TestEnvironment.newEnvironment(nodeSettings);
+
+        assertNull(Analysis.resolveRefPath(env, null));
+        assertNull(Analysis.resolveRefPath(env, ""));
+    }
 }

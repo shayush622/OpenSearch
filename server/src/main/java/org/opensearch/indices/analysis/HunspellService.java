@@ -44,6 +44,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.core.util.FileSystemUtils;
 import org.opensearch.env.Environment;
+import org.opensearch.index.analysis.Analysis;   //POC: Needed Analysis.java below 
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -145,6 +146,97 @@ public class HunspellService {
         }
         return dictionary;
     }
+    //POC: Add new method for enabling extraction through refPath
+        /**
+     * Returns the hunspell dictionary from a ref-path.
+     * The ref-path format is "package-id/hunspell/locale" (e.g., "pkg-12345/hunspell/en_US")
+     *
+     * @param refPath The ref-path string
+     * @param env The environment
+     * @return The loaded Dictionary
+     * @throws IllegalArgumentException if ref-path is invalid
+     * @throws OpenSearchException if dictionary cannot be loaded
+     */
+    public Dictionary getDictionaryFromRefPath(String refPath, Environment env) {
+        String[] parts = Analysis.parseRefPath(refPath);
+        if (parts == null) {
+            throw new IllegalArgumentException("ref_path cannot be null or empty");
+        }
+        
+        // Validate it's a hunspell resource type
+        if (!parts[1].equals("hunspell")) {
+            throw new IllegalArgumentException(
+                "ref_path resource type must be 'hunspell' for hunspell dictionaries, got: " + parts[1]
+            );
+        }
+        
+        String cacheKey = refPath;  // Use full ref-path as cache key
+        String locale = parts[2];   // e.g., "en_US"
+        
+        return dictionaries.computeIfAbsent(cacheKey, (key) -> {
+            try {
+                return loadDictionaryFromRefPath(refPath, env);
+            } catch (Exception e) {
+                logger.error("Failed to load hunspell dictionary from ref_path: " + refPath, e);
+                throw new IllegalStateException("Failed to load hunspell dictionary from ref_path: " + refPath, e);
+            }
+        });
+    }
+
+    /**
+     * Loads a hunspell dictionary from a ref-path resolved directory.
+     */
+    private Dictionary loadDictionaryFromRefPath(String refPath, Environment env) throws Exception {
+        Path dicDir = Analysis.resolveRefPath(env, refPath);
+        
+        if (logger.isDebugEnabled()) {
+            logger.debug("Loading hunspell dictionary from ref_path [{}] at [{}]...", refPath, dicDir);
+        }
+        
+        if (FileSystemUtils.isAccessibleDirectory(dicDir, logger) == false) {
+            throw new OpenSearchException(
+                String.format(Locale.ROOT, "Could not find hunspell dictionary at ref_path [%s]", refPath)
+            );
+        }
+
+        // Load settings from the directory if present
+        Settings dictSettings = loadDictionarySettings(dicDir, Settings.EMPTY);
+        boolean ignoreCase = dictSettings.getAsBoolean("ignore_case", defaultIgnoreCase);
+
+        Path[] affixFiles = FileSystemUtils.files(dicDir, "*.aff");
+        if (affixFiles.length == 0) {
+            throw new OpenSearchException(
+                String.format(Locale.ROOT, "Missing affix file for hunspell dictionary at ref_path [%s]", refPath)
+            );
+        }
+        if (affixFiles.length != 1) {
+            throw new OpenSearchException(
+                String.format(Locale.ROOT, "Too many affix files exist for hunspell dictionary at ref_path [%s]", refPath)
+            );
+        }
+
+        Path[] dicFiles = FileSystemUtils.files(dicDir, "*.dic");
+        InputStream affixStream = null;
+        List<InputStream> dicStreams = new ArrayList<>(dicFiles.length);
+        
+        try {
+            for (Path dicFile : dicFiles) {
+                dicStreams.add(Files.newInputStream(dicFile));
+            }
+            affixStream = Files.newInputStream(affixFiles[0]);
+
+            try (Directory tmp = new NIOFSDirectory(env.tmpDir())) {
+                return new Dictionary(tmp, "hunspell", affixStream, dicStreams, ignoreCase);
+            }
+        } catch (Exception e) {
+            logger.error(() -> new ParameterizedMessage("Could not load hunspell dictionary from ref_path [{}]", refPath), e);
+            throw e;
+        } finally {
+            IOUtils.close(affixStream);
+            IOUtils.close(dicStreams);
+        }
+    }
+
 
     private Path resolveHunspellDirectory(Environment env) {
         return env.configDir().resolve("hunspell");

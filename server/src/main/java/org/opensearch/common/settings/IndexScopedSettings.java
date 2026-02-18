@@ -146,6 +146,8 @@ public final class IndexScopedSettings extends AbstractScopedSettings {
                 IndexSortConfig.INDEX_SORT_ORDER_SETTING,
                 IndexSortConfig.INDEX_SORT_MISSING_SETTING,
                 IndexSortConfig.INDEX_SORT_MODE_SETTING,
+                //POC: Register in BUILT_IN_INDEX_SETTINGS
+                IndexSettings.INDEX_REF_PATH_SETTING,
                 IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING,
                 IndexSettings.INDEX_TRANSLOG_READ_FORWARD_SETTING,
                 IndexSettings.INDEX_WARMER_ENABLED_SETTING,

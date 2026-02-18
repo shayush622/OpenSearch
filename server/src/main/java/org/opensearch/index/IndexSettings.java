@@ -916,6 +916,14 @@ public final class IndexSettings {
         Property.IndexScope,
         Property.Dynamic
     );
+      //POC: Add new definition setting 
+    //TODO -> validator(optional) need to be added for INDEX_REF_PATH_SETTING
+    public static final Setting<String> INDEX_REF_PATH_SETTING = Setting.simpleString(
+        "index.ref_path",
+        "",
+        Property.IndexScope,
+        Property.Dynamic
+    );
 
     private final Index index;
     private final Version version;
@@ -931,6 +939,8 @@ public final class IndexSettings {
     private volatile String remoteStoreTranslogRepository;
     private volatile String remoteStoreRepository;
     private volatile String remoteStoreSegmentPathPrefix;
+    //POC: Add instance variable
+    private volatile String refPath;
     private int remoteTranslogKeepExtraGen;
     private boolean autoForcemergeEnabled;
 
@@ -1168,6 +1178,8 @@ public final class IndexSettings {
         this.defaultAllowUnmappedFields = scopedSettings.get(ALLOW_UNMAPPED);
         this.allowDerivedField = scopedSettings.get(ALLOW_DERIVED_FIELDS);
         this.durability = scopedSettings.get(INDEX_TRANSLOG_DURABILITY_SETTING);
+        //POC: Initialize in constructor
+        this.refPath = scopedSettings.get(INDEX_REF_PATH_SETTING);
         this.translogReadForward = INDEX_TRANSLOG_READ_FORWARD_SETTING.get(settings);
         defaultFields = scopedSettings.get(DEFAULT_FIELD_SETTING);
         syncInterval = INDEX_TRANSLOG_SYNC_INTERVAL_SETTING.get(settings);
@@ -1381,6 +1393,8 @@ public final class IndexSettings {
             this::setRemoteStoreTranslogRepository
         );
         scopedSettings.addSettingsUpdateConsumer(StarTreeIndexSettings.STAR_TREE_SEARCH_ENABLED_SETTING, this::setStarTreeIndexEnabled);
+        //POC: Register Update Consumer
+        scopedSettings.addSettingsUpdateConsumer(INDEX_REF_PATH_SETTING, this::setRefPath);
     }
 
     private void setSearchIdleAfter(TimeValue searchIdleAfter) {
@@ -2001,7 +2015,15 @@ public final class IndexSettings {
     public boolean getStarTreeIndexEnabled() {
         return isStarTreeIndexEnabled;
     }
+    //POC: Add setter method for ref path
+    private void setRefPath(String refPath){
+        this.refPath = refPath;
+    }
 
+    //POC: Add getter method for ref path
+    public String getRefPath(){
+        return refPath;
+    }
     /**
      * Returns the merge policy that should be used for this index.
      *

@@ -112,10 +112,12 @@ import org.opensearch.node.remotestore.RemoteStoreNodeAttribute;
 import org.opensearch.node.remotestore.RemoteStoreNodeService;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.threadpool.ThreadPool;
+import org.opensearch.index.analysis.Analysis;
 
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -1650,6 +1652,8 @@ public class MetadataCreateIndexService {
 
     List<String> getIndexSettingsValidationErrors(final Settings settings, final boolean forbidPrivateIndexSettings, String indexName) {
         List<String> validationErrors = getIndexSettingsValidationErrors(settings, forbidPrivateIndexSettings, Optional.of(indexName));
+        //POC: adding validation errors if any        
+        validationErrors.addAll(validateRefPath(settings, env.configDir()));
         return validationErrors;
     }
 
@@ -1681,6 +1685,37 @@ public class MetadataCreateIndexService {
         }
         return validationErrors;
     }
+     //POC: Add few validations to be checked before index creation 
+        /**
+     * Validates the ref_path setting if present.
+     * Checks that the path format is valid and the directory exists.
+     *
+     * @param settings the index settings
+     * @param configDir the config directory path
+     * @return a list containing validation errors or an empty list if valid
+     */
+    private List<String> validateRefPath(Settings settings, Path configDir) {
+        List<String> validationErrors = new ArrayList<>();
+        String refPath = settings.get(IndexSettings.INDEX_REF_PATH_SETTING.getKey());
+        
+        if (refPath != null && !refPath.isEmpty()) {
+            try {
+                // Validate format using Analysis.parseRefPath()
+                Analysis.validateRefPathFormat(refPath);
+                
+                // Resolve and check if path exists
+                Path resolvedPath = Analysis.resolveRefPath(env, refPath);
+                if (resolvedPath != null && !Files.isDirectory(resolvedPath)) {
+                    validationErrors.add("ref_path [" + refPath + "] does not exist or is not a directory");
+                }
+            } catch (IllegalArgumentException e) {
+                validationErrors.add("invalid ref_path [" + refPath + "]: " + e.getMessage());
+            }
+        }
+        
+        return validationErrors;
+    }
+
 
     private static List<String> validatePrivateSettingsNotExplicitlySet(Settings settings, IndexScopedSettings indexScopedSettings) {
         List<String> validationErrors = new ArrayList<>();

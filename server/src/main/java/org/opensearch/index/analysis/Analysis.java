@@ -354,4 +354,76 @@ public class Analysis {
             return false;
         }
     }
+     //POC: Add methods for analyzing and resolving new ref paths
+        /**
+     * Parses and validates a ref-path string in the format "package-id/type/locale".
+     * This is the core function that other ref-path methods use internally.
+     *
+     * @param refPath The ref-path string (e.g., "pkg-12345/hunspell/en_US")
+     * @return String array with [packageId, resourceType, locale], or null if refPath is null/empty
+     * @throws IllegalArgumentException if the path format is invalid or resource type is unsupported
+     */
+    public static String[] parseRefPath(String refPath) {
+        if (refPath == null || refPath.isEmpty()) {
+            return null;
+        }
+
+        String[] parts = refPath.split("/");
+        if (parts.length != 3) {
+            throw new IllegalArgumentException(
+                "Invalid ref_path format: expected 'package-id/type/locale', got: " + refPath
+            );
+        }
+
+        String resourceType = parts[1];
+        if (!resourceType.equals("hunspell") && !resourceType.equals("text-dictionary")) {
+            throw new IllegalArgumentException(
+                "Invalid resource type in ref_path: expected 'hunspell' or 'text-dictionary', got: " + resourceType
+            );
+        }
+
+        return parts;  // [packageId, resourceType, locale]
+    }
+
+    /**
+     * Validates a ref-path format without resolving it.
+     *
+     * @param refPath The ref-path string to validate
+     * @return true if the format is valid, false if refPath is null/empty
+     * @throws IllegalArgumentException if the format is invalid
+     */
+    public static boolean validateRefPathFormat(String refPath) {
+        return parseRefPath(refPath) != null;
+    }
+
+    /**
+     * Resolves a ref-path to an actual filesystem Path.
+     * Example: "pkg-12345/hunspell/en_US" resolves to {@code config/packages/pkg-12345/hunspell/en_US/}
+     *
+     * @param env The environment containing config directory
+     * @param refPath The ref-path string (e.g., "pkg-12345/hunspell/en_US")
+     * @return The resolved Path to the directory, or null if refPath is null/empty
+     * @throws IllegalArgumentException if the path format is invalid or security check fails
+     */
+    public static Path resolveRefPath(Environment env, String refPath) {
+        String[] parts = parseRefPath(refPath);
+        if (parts == null) {
+            return null;
+        }
+
+        // Build the path: packages/<package-id>/<type>/<locale>
+        Path resolvedPath = env.configDir()
+            .resolve("packages")
+            .resolve(parts[0])   // packageId
+            .resolve(parts[1])   // resourceType
+            .resolve(parts[2])   // locale
+            .normalize();
+
+        // Security check: ensure path is under config directory
+        if (!resolvedPath.startsWith(env.configDir().toAbsolutePath())) {
+            throw new IllegalArgumentException("ref_path must resolve to a path under config directory");
+        }
+
+        return resolvedPath;
+    }
 }
