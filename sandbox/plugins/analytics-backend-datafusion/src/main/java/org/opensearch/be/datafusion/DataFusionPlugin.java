@@ -10,11 +10,17 @@ package org.opensearch.be.datafusion;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
+import org.opensearch.be.datafusion.action.DataFusionStatsAction;
 import org.opensearch.be.datafusion.cache.CacheSettings;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
+import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.settings.ClusterSettings;
+import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.settings.SettingsFilter;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
@@ -22,9 +28,12 @@ import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.engine.dataformat.DataFormatRegistry;
 import org.opensearch.index.engine.dataformat.ReaderManagerConfig;
 import org.opensearch.index.engine.exec.EngineReaderManager;
+import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.SearchBackEndPlugin;
 import org.opensearch.repositories.RepositoriesService;
+import org.opensearch.rest.RestController;
+import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
@@ -46,16 +55,22 @@ import io.substrait.extension.SimpleExtension;
  * Analytics query capabilities are declared in {@link DataFusionAnalyticsBackendPlugin},
  * which is SPI-discovered and receives this plugin instance via its constructor.
  */
-public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<DatafusionReader> {
+public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<DatafusionReader>, AnalyticsSearchBackendPlugin, ActionPlugin {
 
     private static final Logger logger = LogManager.getLogger(DataFusionPlugin.class);
 
-    /** Memory pool limit for the DataFusion runtime. */
+    /**
+     * Memory pool limit for the DataFusion runtime.
+     * <p>
+     * Dynamic: changes take effect for new allocations only. Existing reservations
+     * that exceed the new limit are not reclaimed — they drain naturally as queries complete.
+     */
     public static final Setting<Long> DATAFUSION_MEMORY_POOL_LIMIT = Setting.longSetting(
         "datafusion.memory_pool_limit_bytes",
         Runtime.getRuntime().maxMemory() / 4,
         0L,
-        Setting.Property.NodeScope
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
     );
 
     /** Spill memory limit — when exceeded, DataFusion spills to disk. */
@@ -131,6 +146,10 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
         dataFusionService.start();
         logger.debug("DataFusion plugin initialized — memory pool {}B, spill limit {}B", memoryPoolLimit, spillMemoryLimit);
 
+        // Wire the dynamic memory pool limit setting to the native runtime so updates via the
+        // cluster settings API take effect without restarting the node.
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(DATAFUSION_MEMORY_POOL_LIMIT, this::updateMemoryPoolLimit);
+
         this.substraitExtensions = loadSubstraitExtensions();
 
         return Collections.singletonList(dataFusionService);
@@ -187,6 +206,35 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
         );
     }
 
+    /**
+     * Applies a new memory pool limit to the running DataFusion runtime.
+     * <p>
+     * Takes effect for new allocations only. In-flight reservations that already
+     * exceed the new limit are not reclaimed and drain as queries complete.
+     * <p>
+     * Safe to call during plugin startup before {@link #createComponents} returns
+     * (service is null, ignored) and during shutdown after the native runtime has
+     * been released (service throws {@link IllegalStateException}, caught and logged).
+     * <p>
+     * Package-private for testing.
+     */
+    void updateMemoryPoolLimit(long newLimitBytes) {
+        DataFusionService service = dataFusionService;
+        if (service == null) {
+            logger.debug("DataFusion service not yet initialized; ignoring memory pool limit update to {}B", newLimitBytes);
+            return;
+        }
+        try {
+            service.setMemoryPoolLimit(newLimitBytes);
+            logger.info("Updated DataFusion memory pool limit to {}B", newLimitBytes);
+        } catch (IllegalStateException e) {
+            // Service has been stopped/closed (e.g., during node shutdown). The listener is
+            // still registered on ClusterSettings because there is no removeSettingsUpdateConsumer
+            // API; swallow the race so cluster-state application does not log a spurious failure.
+            logger.warn("Ignoring memory pool limit update to {}B; service is not running", newLimitBytes);
+        }
+    }
+
     @Override
     public String name() {
         return "datafusion";
@@ -200,6 +248,22 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
     @Override
     public List<String> getSupportedFormats() {
         return List.of(SUPPORTED_FORMAT);
+    }
+
+    @Override
+    public List<RestHandler> getRestHandlers(
+        Settings settings,
+        RestController restController,
+        ClusterSettings clusterSettings,
+        IndexScopedSettings indexScopedSettings,
+        SettingsFilter settingsFilter,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        Supplier<DiscoveryNodes> nodesInCluster
+    ) {
+        if (dataFusionService == null) {
+            return Collections.emptyList();
+        }
+        return List.of(new DataFusionStatsAction(dataFusionService));
     }
 
     @Override

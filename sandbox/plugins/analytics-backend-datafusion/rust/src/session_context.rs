@@ -29,7 +29,7 @@ use log::error;
 use object_store::ObjectMeta;
 
 use crate::api::{DataFusionRuntime, ShardView};
-use crate::query_memory_pool_tracker::QueryTrackingContext;
+use crate::query_tracker::QueryTrackingContext;
 
 /// Opaque handle holding a configured SessionContext between FFM calls.
 pub struct SessionContextHandle {
@@ -37,6 +37,15 @@ pub struct SessionContextHandle {
     pub table_path: ListingTableUrl,
     pub object_metas: Arc<Vec<ObjectMeta>>,
     pub query_context: QueryTrackingContext,
+    pub table_name: String,
+    /// When set, indicates this session uses the indexed execution path with filter delegation.
+    pub indexed_config: Option<IndexedExecutionConfig>,
+}
+
+/// Configuration for indexed execution with filter delegation, provided by Java.
+pub struct IndexedExecutionConfig {
+    pub tree_shape: i32,
+    pub delegated_predicate_count: i32,
 }
 
 /// Creates a SessionContext with per-query RuntimeEnv and registers the default
@@ -99,6 +108,7 @@ pub async unsafe fn create_session_context(
         .build();
 
     let ctx = SessionContext::new_with_state(state);
+    crate::udf::register_all(&ctx);
 
     // Register default ListingTable for parquet scans
     let listing_options = ListingOptions::new(Arc::new(ParquetFormat::new()))
@@ -134,6 +144,8 @@ pub async unsafe fn create_session_context(
         table_path: shard_view.table_path.clone(),
         object_metas: shard_view.object_metas.clone(),
         query_context,
+        table_name: table_name.to_string(),
+        indexed_config: None,
     };
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
@@ -146,4 +158,29 @@ pub unsafe fn close_session_context(ptr: i64) {
     if ptr != 0 {
         let _ = Box::from_raw(ptr as *mut SessionContextHandle);
     }
+}
+
+/// Creates a SessionContext configured for indexed execution with filter delegation.
+/// Registers the `delegated_predicate` UDF and stores the tree shape + predicate count
+/// for use during execution.
+pub async unsafe fn create_session_context_indexed(
+    runtime_ptr: i64,
+    shard_view_ptr: i64,
+    table_name: &str,
+    context_id: i64,
+    tree_shape: i32,
+    delegated_predicate_count: i32,
+) -> Result<i64, DataFusionError> {
+    // Create base session context (same as non-indexed path)
+    let ptr = create_session_context(runtime_ptr, shard_view_ptr, table_name, context_id).await?;
+
+    // Augment with indexed config and UDF registration
+    let handle = &mut *(ptr as *mut SessionContextHandle);
+    handle.ctx.register_udf(crate::indexed_table::substrait_to_tree::create_index_filter_udf());
+    handle.indexed_config = Some(IndexedExecutionConfig {
+        tree_shape,
+        delegated_predicate_count,
+    });
+
+    Ok(ptr)
 }
